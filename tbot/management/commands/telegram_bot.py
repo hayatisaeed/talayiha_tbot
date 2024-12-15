@@ -5,7 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackContext, \
     ConversationHandler, CallbackQueryHandler, MessageHandler, filters
 from django.core.management.base import BaseCommand
-from tbot.models import Student, Teacher, President, Exam, Answer, Group  # Import your model here
+from tbot.models import Student, Teacher, President, Exam, Answer, Group, ScoreSheet  # Import your model here
 from .bot_utils import is_student, is_teacher, is_president, user_exists, create_exam_link
 from functools import wraps
 from asgiref.sync import sync_to_async
@@ -182,6 +182,39 @@ def get_exams(offset=0, limit=10, group_id: int | None = None):
     return list(noasync_get_exams(offset, limit, group_id))
 
 
+def noasync_get_answers(offset=0, limit=10, group_id: int | None = None):
+    """
+    Fetch exams, optionally filtering by a specific group.
+
+    :param offset: Pagination offset
+    :param limit: Pagination limit
+    :param group_id: ID of the group to filter exams
+    :return: QuerySet of exams
+    """
+    if group_id:
+        # Filter exams related to the specified group
+        answers = Answer.objects.filter(related_groups__id=group_id)
+    else:
+        # Return all exams if no group filter is applied
+        answers = Answer.objects.all()
+
+    # Apply offset and limit for pagination
+    return answers[offset:offset + limit]
+
+
+@sync_to_async
+def get_answers(offset=0, limit=10, group_id: int | None = None):
+    """
+    Async wrapper for get_exams.
+
+    :param offset: Pagination offset
+    :param limit: Pagination limit
+    :param group_id: ID of the group to filter exams
+    :return: List of exams
+    """
+    return list(noasync_get_answers(offset, limit, group_id))
+
+
 def noasync_get_groups(offset=0, limit=10, teacher=None, student=None):
     """
     Fetch groups related to a specific teacher or student.
@@ -194,10 +227,10 @@ def noasync_get_groups(offset=0, limit=10, teacher=None, student=None):
     """
     if teacher:
         # Filter groups related to the teacher
-        groups = Group.objects.filter(teacher_groups__teacher=teacher)
+        groups = Group.objects.filter(teachergroup__teacher=teacher)
     elif student:
         # Filter groups related to the student
-        groups = Group.objects.filter(student_groups__student=student)
+        groups = Group.objects.filter(studentgroup__student=student)
     else:
         # Return all groups if no specific filter is applied
         groups = Group.objects.all()
@@ -233,8 +266,31 @@ async def create_exam_buttons(offset=0, group_id=None):
     # Pagination buttons
     if offset > 0:
         last_row.append([InlineKeyboardButton(text="⬅ Previous", callback_data=f"prevExam_{offset}")])
-    if await sync_to_async(Exam.objects.count)() > offset + 10:
+    tmp_exams = await get_exams(offset=offset + 10, limit=10, group_id=group_id)
+    if len(tmp_exams) > 0:
         last_row.append([InlineKeyboardButton(text="Next ➡", callback_data=f"nextExam_{offset}")])
+
+    if len(last_row) > 0:
+        keyboard.append(last_row)
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def create_answer_buttons(offset=0, group_id=None):
+    answers = await get_answers(offset=offset, limit=10, group_id=group_id)
+    keyboard = []
+    for answer in answers:
+        keyboard.append(
+            [InlineKeyboardButton(text=answer.name, callback_data=f"answer_{answer.id}")]
+        )
+
+    last_row = []
+    # Pagination buttons
+    if offset > 0:
+        last_row.append([InlineKeyboardButton(text="⬅ Previous", callback_data=f"prevAnswer_{offset}")])
+    tmp_answers = await get_answers(offset=offset + 10, limit=10, group_id=group_id)
+    if len(tmp_answers) > 0:
+        last_row.append([InlineKeyboardButton(text="Next ➡", callback_data=f"nextAnswer_{offset}")])
 
     if len(last_row) > 0:
         keyboard.append(last_row)
@@ -254,9 +310,9 @@ async def create_group_buttons(offset=0, student=None, teacher=None):
 
     # Pagination buttons
     if offset > 0:
-        last_row.append([InlineKeyboardButton(text="⬅ Previous", callback_data=f"prevGroup_{offset}")])
-    if await sync_to_async(Exam.objects.count)() > offset + 10:
-        last_row.append([InlineKeyboardButton(text="Next ➡", callback_data=f"nextGroup_{offset}")])
+        last_row.append(InlineKeyboardButton(text="⬅ Previous", callback_data=f"prevGroup_{offset}"))
+    if len(await get_groups(offset=offset + 10, limit=10, student=student, teacher=teacher)) > 0:
+        last_row.append(InlineKeyboardButton(text="Next ➡", callback_data=f"nextGroup_{offset}"))
     if len(last_row) > 0:
         keyboard.append(last_row)
 
@@ -275,7 +331,8 @@ def new_answer(student_id, exam_id, related_student_chat_id, time_started):
     try:
         related_exam = Exam.objects.get(id=exam_id)
         related_student = Student.objects.get(id=student_id)
-        answer = Answer(related_student=related_student, related_student_chat_id=related_student_chat_id, related_exam=related_exam, time_started=time_started)
+        answer = Answer(related_student=related_student, related_student_chat_id=related_student_chat_id,
+                        related_exam=related_exam, time_started=time_started)
         answer.save()
         return answer
     except Exception as e:
@@ -297,10 +354,58 @@ async def handle_callback_query(update: Update, context: CallbackContext) -> int
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(f"{exam.name}", reply_markup=reply_markup)
         await query.answer()
+    elif data.startswith("group_"):
+        await query.answer()
+        group_id = int(data.split("_")[1])
+        group = await sync_to_async(Group.objects.get)(pk=group_id)
+        if await is_student(update.effective_user.id):
+            reply_markup = await create_exam_buttons(group_id=group_id)
+            await query.edit_message_text(
+                f"Showing Exams for: {group.name}", reply_markup=reply_markup
+            )
+        else:
+            reply_markup = await create_answer_buttons(group_id=group_id)
+            await query.edit_message_text(
+                f"Showing Answers of students of: {group.name}", reply_markup=reply_markup
+            )
+        group_id = int(data.split("_")[1])
+        group = await sync_to_async(Group.objects.get)(pk=group_id)
+        reply_markup = await create_group_buttons(group_id=group_id)
+        await query.edit_message_text(
+            f"Showing Exams for: {group.name}", reply_markup=reply_markup
+        )
     elif data.startswith("showMyGroups_"):
         await query.answer()
-        reply_markup = await create_group_buttons(offset=int(query.data.split("_")[1]))
+        if await is_student(chat_id=update.effective_user.id):
+            student = await sync_to_async(Student.objects.get)(chat_id=update.effective_user.id)
+            reply_markup = await create_group_buttons(offset=int(query.data.split("_")[1]), student=student)
+        else:
+            teacher = await sync_to_async(Teacher.objects.get)(chat_id=update.effective_user.id)
+            reply_markup = await create_group_buttons(offset=int(query.data.split("_")[1]), teacher=teacher)
         await query.edit_message_text("Your Groups:", reply_markup=reply_markup)
+    elif data.startswith("answer_"):
+        answer_id = int(data.split('_')[1])
+        try:
+            answer = await sync_to_async(Answer.objects.get)(id=answer_id)
+        except Exception as e:
+            answer = None
+
+        if answer:
+            file_path = answer.related_file.path
+            with open(file_path, 'rb') as file:
+                message = await context.bot.send_document(
+                    chat_id=query.from_user.id,
+                    document=InputFile(file, filename=answer.related_file.name),
+                    caption=f"Student Name: {answer.related_student.name}"
+                    f"\nAnswer to Exam: {answer.related_exam.name}"
+                    f"\nDuration: {answer.duration}"
+                    f"\n\nReply the score to this message"
+
+                )
+            message_id = message.id
+            context.user_data[message_id] = answer_id
+        else:
+            await query.edit_message_text("Nothing was found!")
     elif data.startswith("showExam_"):
         student = await sync_to_async(Student.objects.get)(chat_id=update.effective_user.id)
         student_id = student.id
@@ -320,8 +425,9 @@ async def handle_callback_query(update: Update, context: CallbackContext) -> int
                     message = await context.bot.send_document(
                         chat_id=query.from_user.id,
                         document=InputFile(file, filename=exam.related_file.name),
-                        caption="""Exam Started Now! \n
-Send Your Answer in one file, reply that to this message. Duration will be calculated automatically."""
+                        caption=f"Exam Started Now! \n"
+                        f"Send Your Answer in one file, reply that to this message.\n"
+                        f"Duration will be calculated automatically.\n"
                     )
                 message_id = message.id
                 answer.related_message_id = message_id
@@ -342,80 +448,104 @@ Send Your Answer in one file, reply that to this message. Duration will be calcu
         await query.answer()
 
 
-
 async def handle_answer_reply(update: Update, context: CallbackContext) -> None:
     if update.message.reply_to_message:  # Ensure the message is a reply
         replied_message = update.message.reply_to_message
         user_message = update.message
         message = update.message
+        user_id = update.effective_user.id
 
-        # Check if the replied message belongs to the bot
-        if replied_message.from_user.id == context.bot.id:
-            # Ensure the user isn't replying to their own message
-            if replied_message.from_user.id != user_message.from_user.id:
-                if message.document:  # Check if the message contains a document
-                    try:
-                        answer = await sync_to_async(Answer.objects.get)(
-                            related_student_chat_id=update.effective_user.id,
-                            related_message_id=replied_message.message_id,
-                        )
-                        if answer.ended:
-                            answer = "Ended"
+        if await is_student(chat_id=user_id):
+            # Check if the replied message belongs to the bot
+            if replied_message.from_user.id == context.bot.id:
+                # Ensure the user isn't replying to their own message
+                if replied_message.from_user.id != user_message.from_user.id:
+                    if message.document:  # Check if the message contains a document
+                        try:
+                            answer = await sync_to_async(Answer.objects.get)(
+                                related_student_chat_id=update.effective_user.id,
+                                related_message_id=replied_message.message_id,
+                            )
+                            if answer.ended:
+                                answer = "Ended"
+                            else:
+                                answer.ended = True
+                                await sync_to_async(answer.save)()
+                        except Exception as e:
+                            print(e)
+                            answer = None
+                        if answer == "Ended":
+                            await context.bot.send_message(
+                                chat_id=update.effective_chat.id,
+                                text="Sorry, Exam is already ended."
+                            )
+                        elif not answer:
+                            await context.bot.send_message(
+                                chat_id=update.effective_chat.id,
+                                text="IDK what to do with this!"
+                            )
                         else:
-                            answer.ended = True
-                            await sync_to_async(answer.save)()
-                    except Exception as e:
-                        print(e)
-                        answer = None
-                    if answer == "Ended":
-                        await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
-                            text="Sorry, Exam is already ended."
-                        )
-                    elif not answer:
-                        await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
-                            text="IDK what to do with this!"
-                        )
+                            # Step 1: Retrieve the file from Telegram
+                            file = await context.bot.get_file(message.document.file_id)
+                            file_name = message.document.file_name
+                            os.makedirs("./tmpFiles", exist_ok=True)
+                            file_path = f"./tmpFiles/{file_name}"
+
+                            # Step 2: Download the file to a temporary location
+                            await file.download_to_drive(file_path)
+
+                            # Step 3: Save the file to the Django model
+                            with open(file_path, 'rb') as f:
+                                django_file = File(f)
+                                uploaded_file = answer.related_file = django_file
+                                await sync_to_async(answer.save)()
+
+                            # Step 4: Respond to the user
+                            await context.bot.send_message(
+                                chat_id=message.chat.id,
+                                text=f"File has been saved successfully! Wait till your score comes out.\n"
+                                f"your exam duration: {answer.duration}\n"
+                            )
+
+                            # Step 5: Clean up the temporary file
+                            os.remove(file_path)
                     else:
-                        # Step 1: Retrieve the file from Telegram
-                        file = await context.bot.get_file(message.document.file_id)
-                        file_name = message.document.file_name
-                        os.makedirs("./tmpFiles", exist_ok=True)
-                        file_path = f"./tmpFiles/{file_name}"
-
-                        # Step 2: Download the file to a temporary location
-                        await file.download_to_drive(file_path)
-
-                        # Step 3: Save the file to the Django model
-                        with open(file_path, 'rb') as f:
-                            django_file = File(f)
-                            uploaded_file = answer.related_file = django_file
-                            await sync_to_async(answer.save)()
-
-                        # Step 4: Respond to the user
                         await context.bot.send_message(
-                            chat_id=message.chat.id,
-                            text=f"File '{uploaded_file.file.name}' has been saved successfully!"
+                            chat_id=user_message.chat.id,
+                            text="Reply a Document!"
                         )
-
-                        # Step 5: Clean up the temporary file
-                        os.remove(file_path)
                 else:
                     await context.bot.send_message(
                         chat_id=user_message.chat.id,
-                        text="Reply a Document!"
+                        text="."
                     )
             else:
                 await context.bot.send_message(
                     chat_id=user_message.chat.id,
                     text="."
                 )
-        else:
-            await context.bot.send_message(
-                chat_id=user_message.chat.id,
-                text="."
-            )
+        elif context.user_data.get(replied_message.id, None):  # user is teacher and replied message is correct
+            try:
+                score = float(update.message.text)
+            except ValueError:
+                score = None
+
+            if score is None:
+                await update.message.reply_text("Send a Valid Number! eg: 10.25")
+            else:
+                answer_id = context.user_data[replied_message.id]
+                answer = await sync_to_async(Answer.objects.get)(id=answer_id)
+                new_score_sheet = await sync_to_async(ScoreSheet.objects.create)(related_answer=answer, score=score)
+                await new_score_sheet.save()
+                related_student_chat_id = answer.related_student.chat_id
+                await update.message.reply_text(f"Done! Score was set: {score}")
+                await context.bot.send_message(
+                    chat_id=related_student_chat_id,
+                    text=f"You have a new score sheet!\n"
+                    f"Exam name: {answer.related_exam.name}\n"
+                    f"Your exam duration: {answer.duration}\n"
+                    f"\n\nYour exam score: {score}"
+                )
 
 
 reply_to_bot_handler = MessageHandler(filters.REPLY, handle_answer_reply)

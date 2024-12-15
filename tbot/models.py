@@ -129,7 +129,7 @@ class Answer(models.Model):
 
 
 class ScoreSheet(models.Model):
-    score = models.IntegerField()
+    score = models.FloatField()
     related_answer = models.OneToOneField(Answer, on_delete=models.CASCADE, related_name="score_sheet")
 
     def __str__(self):
