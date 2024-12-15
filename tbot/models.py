@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 
@@ -93,6 +95,7 @@ class Group(models.Model):
 
 
 class Exam(models.Model):
+    related_groups = models.ManyToManyField(Group, related_name='exam_groups')
     name = models.CharField(max_length=255)
     related_file = models.FileField(upload_to='examfiles/', blank=True, null=True)  # FileField for uploads
 
@@ -101,22 +104,36 @@ class Exam(models.Model):
 
 
 class Answer(models.Model):
+    related_exam = models.ForeignKey(Exam, on_delete=models.CASCADE, null=True)
     related_student = models.ForeignKey(Student, on_delete=models.CASCADE)
-    time_started_exam = models.DateTimeField()
-    submission_time = models.DateTimeField()
-    related_files = models.FileField(upload_to='examfiles/', blank=True, null=True, )
+    related_student_chat_id = models.CharField(max_length=255)
+    related_message_id = models.CharField(max_length=2250, blank=True)
+    ended = models.BooleanField(default=False)
+    time_started = models.DateTimeField(auto_now_add=True)
+    time_ended = models.DateTimeField(auto_now=True)
+    related_file = models.FileField(upload_to='examfiles/answerfiles', blank=True, null=True)
 
     def __str__(self):
         return f"Answer by {self.related_student}"
 
+    @property
+    def duration(self):
+        """
+        Returns the duration between time_started and time_ended.
+        If time_ended is not set, it calculates duration until now.
+        """
+        if self.time_ended:
+            return self.time_ended - self.time_started
+        else:
+            return timedelta(0)
+
 
 class ScoreSheet(models.Model):
-    exam = models.ForeignKey(Exam, on_delete=models.CASCADE)
     score = models.IntegerField()
-    answer = models.OneToOneField(Answer, on_delete=models.CASCADE, related_name="score_sheet")
+    related_answer = models.OneToOneField(Answer, on_delete=models.CASCADE, related_name="score_sheet")
 
     def __str__(self):
-        return f"ScoreSheet for Exam {self.exam}"
+        return f"ScoreSheet for Answer {self.related_answer}"
 
 
 # Intermediary models for ManyToMany relationships

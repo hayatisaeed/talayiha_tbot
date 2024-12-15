@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Answer for {{ exam.name }}</title>
+</head>
+<body>
+    <h1>Exam: {{ exam.name }}</h1>
+
+    {% if answer.duration %}
+        <p>Timer started. Duration: {{ answer.duration }}</p>
+        <form method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+            <label for="related_file">Upload your answer:</label>
+            <input type="file" name="related_file" id="related_file" required>
+            <button type="submit" name="submit">Submit</button>
+        </form>
+    {% else %}
+        <p>Click the button below to start your exam:</p>
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" name="start">Start Exam</button>
+        </form>
+    {% endif %}
+</body>
+</html>

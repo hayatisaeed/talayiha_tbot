@@ -1,12 +1,17 @@
+import datetime
 import os
 import django
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackContext
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackContext, \
+    ConversationHandler, CallbackQueryHandler, MessageHandler, filters
 from django.core.management.base import BaseCommand
-from tbot.models import Student, Teacher, President  # Import your model here
-from .bot_utils import is_student, is_teacher, is_president, user_exists
+from tbot.models import Student, Teacher, President, Exam, Answer, Group  # Import your model here
+from .bot_utils import is_student, is_teacher, is_president, user_exists, create_exam_link
 from functools import wraps
 from asgiref.sync import sync_to_async
+from tbot.information import BASE_URL
+from telegram import InputFile
+from django.core.files import File
 
 
 # Initialize Django settings
@@ -15,7 +20,7 @@ django.setup()
 
 
 # Replace with your bot's token
-TOKEN = ""
+TOKEN = "8042887753:AAFF9FBEuEgcyeqVnsPC06_KMw2gAsF7Q64"
 SERVER_URL = ""
 
 # File paths
@@ -24,6 +29,10 @@ SAVE_DIRECTORY = "examfiles/answerfiles/"  # Update with your desired save direc
 
 # Ensure the save directory exists
 os.makedirs(SAVE_DIRECTORY, exist_ok=True)
+
+
+# Constants for conversation states
+SHOW_EXAMS, HANDLE_BUTTON = range(2)
 
 
 def user_authorized(user_id, allowed_roles: set):
@@ -73,29 +82,42 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif await is_student(user_id):
         student = await sync_to_async(Student.objects.get)(chat_id=user_id)
         fullname = student.fullname
+        keyboard = [
+            [InlineKeyboardButton('My Groups', callback_data='showMyGroups_0')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
             f"""
             Welcome  {fullname}!
             
             Available Commands:
             
-            /my_info  Your Info
             /my_exams  Your New Exams
             /my_scores  Your Scores
-            """
+            
+            """,
+            reply_markup=reply_markup
         )
     elif await is_teacher(user_id):
         teacher = await sync_to_async(Teacher.objects.get)(chat_id=user_id)
         fullname = teacher.fullname
+        keyboard = [
+            # [InlineKeyboardButton('Open Web Panel', url=f"{BASE_URL}/admin")],  # TODO: uncomment this in production
+            [InlineKeyboardButton('My Groups', callback_data='showMyGroups_0')],
+
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
             f"""
-                    Welcome  {fullname}!
+Welcome  {fullname}!
 
-                    Available Commands:
-
-                    /my_info  Your Info
-                    /my_scores  Your Scores
-                    """
+to add a new exam, go to 
+{BASE_URL}/admin
+and login using your username and password, then create a new exam.
+your students answers will be sent to you and you can set their scores by just replying a number to that message.
+or you can do it manually from you web panel.
+                    """,
+            reply_markup=reply_markup
         )
 
     elif await is_president(user_id):
@@ -107,7 +129,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"""
             Welcome {fullname},
             please use your web panel:
-            {SERVER_URL}/admin
+            {BASE_URL}/admin
             
             Your username: {username}
             Your password: {password}
@@ -126,6 +148,279 @@ async def register(update: Update, context: CallbackContext) -> None:
     """)
 
 
+# Function to retrieve exams from the database
+def noasync_get_exams(offset=0, limit=10, group_id: int | None = None):
+    """
+    Fetch exams, optionally filtering by a specific group.
+
+    :param offset: Pagination offset
+    :param limit: Pagination limit
+    :param group_id: ID of the group to filter exams
+    :return: QuerySet of exams
+    """
+    if group_id:
+        # Filter exams related to the specified group
+        exams = Exam.objects.filter(related_groups__id=group_id)
+    else:
+        # Return all exams if no group filter is applied
+        exams = Exam.objects.all()
+
+    # Apply offset and limit for pagination
+    return exams[offset:offset + limit]
+
+
+@sync_to_async
+def get_exams(offset=0, limit=10, group_id: int | None = None):
+    """
+    Async wrapper for get_exams.
+
+    :param offset: Pagination offset
+    :param limit: Pagination limit
+    :param group_id: ID of the group to filter exams
+    :return: List of exams
+    """
+    return list(noasync_get_exams(offset, limit, group_id))
+
+
+def noasync_get_groups(offset=0, limit=10, teacher=None, student=None):
+    """
+    Fetch groups related to a specific teacher or student.
+
+    :param offset: Pagination offset
+    :param limit: Pagination limit
+    :param teacher: Teacher object to filter groups
+    :param student: Student object to filter groups
+    :return: List of groups
+    """
+    if teacher:
+        # Filter groups related to the teacher
+        groups = Group.objects.filter(teacher_groups__teacher=teacher)
+    elif student:
+        # Filter groups related to the student
+        groups = Group.objects.filter(student_groups__student=student)
+    else:
+        # Return all groups if no specific filter is applied
+        groups = Group.objects.all()
+
+    # Apply offset and limit for pagination
+    return groups[offset:offset + limit]
+
+
+@sync_to_async
+def get_groups(offset=0, limit=10, teacher=None, student=None):
+    """
+    Async wrapper for get_groups.
+
+    :param offset: Pagination offset
+    :param limit: Pagination limit
+    :param teacher: Teacher object to filter groups
+    :param student: Student object to filter groups
+    :return: List of groups
+    """
+    return list(noasync_get_groups(offset, limit, teacher, student))
+
+
+# Function to create the inline keyboard
+async def create_exam_buttons(offset=0, group_id=None):
+    exams = await get_exams(offset=offset, limit=10, group_id=group_id)
+    keyboard = []
+    for exam in exams:
+        keyboard.append(
+            [InlineKeyboardButton(text=exam.name, callback_data=f"exam_{exam.id}")]
+        )
+
+    last_row = []
+    # Pagination buttons
+    if offset > 0:
+        last_row.append([InlineKeyboardButton(text="⬅ Previous", callback_data=f"prevExam_{offset}")])
+    if await sync_to_async(Exam.objects.count)() > offset + 10:
+        last_row.append([InlineKeyboardButton(text="Next ➡", callback_data=f"nextExam_{offset}")])
+
+    if len(last_row) > 0:
+        keyboard.append(last_row)
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def create_group_buttons(offset=0, student=None, teacher=None):
+    groups = await get_groups(offset=offset, limit=10, student=student, teacher=teacher)
+    keyboard = []
+    for group in groups:
+        keyboard.append(
+            [InlineKeyboardButton(text=group.name, callback_data=f"group_{group.id}")]
+        )
+
+    last_row = []
+
+    # Pagination buttons
+    if offset > 0:
+        last_row.append([InlineKeyboardButton(text="⬅ Previous", callback_data=f"prevGroup_{offset}")])
+    if await sync_to_async(Exam.objects.count)() > offset + 10:
+        last_row.append([InlineKeyboardButton(text="Next ➡", callback_data=f"nextGroup_{offset}")])
+    if len(last_row) > 0:
+        keyboard.append(last_row)
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+# Handler for the /my_exams command
+async def exams_command(update: Update, context: CallbackContext) -> int:
+    student = sync_to_async(Student.objects.get)(chat_id=update.effective_user.id)
+    keyboard = await create_group_buttons(student=student)
+    await update.message.reply_text("Select a group:", reply_markup=keyboard)
+    return SHOW_EXAMS
+
+
+def new_answer(student_id, exam_id, related_student_chat_id, time_started):
+    try:
+        related_exam = Exam.objects.get(id=exam_id)
+        related_student = Student.objects.get(id=student_id)
+        answer = Answer(related_student=related_student, related_student_chat_id=related_student_chat_id, related_exam=related_exam, time_started=time_started)
+        answer.save()
+        return answer
+    except Exception as e:
+        return None
+
+
+async def handle_callback_query(update: Update, context: CallbackContext) -> int:
+    query = update.callback_query
+
+    data = query.data
+
+    if data.startswith("exam_"):
+        exam_id = int(data.split("_")[1])
+        exam = await sync_to_async(Exam.objects.get)(pk=exam_id)
+        keyboard = [
+            [InlineKeyboardButton(text=f"Start Exam", callback_data=f"showExam_{exam_id}")],
+            [InlineKeyboardButton(text=f"Cancel", callback_data="exam_0")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"{exam.name}", reply_markup=reply_markup)
+        await query.answer()
+    elif data.startswith("showMyGroups_"):
+        await query.answer()
+        reply_markup = await create_group_buttons(offset=int(query.data.split("_")[1]))
+        await query.edit_message_text("Your Groups:", reply_markup=reply_markup)
+    elif data.startswith("showExam_"):
+        student = await sync_to_async(Student.objects.get)(chat_id=update.effective_user.id)
+        student_id = student.id
+        exam_id = int(data.split("_")[1])
+        exam = await sync_to_async(Exam.objects.get)(id=exam_id)
+        file_path = exam.related_file.path
+        answer = await sync_to_async(new_answer)(
+            student_id=student_id,
+            related_student_chat_id=update.effective_user.id,
+            exam_id=exam_id,
+            time_started=datetime.datetime.now()
+        )
+        if answer:
+            if exam.related_file:
+                await query.answer("sending file, wait ...", )
+                with open(file_path, 'rb') as file:
+                    message = await context.bot.send_document(
+                        chat_id=query.from_user.id,
+                        document=InputFile(file, filename=exam.related_file.name),
+                        caption="""Exam Started Now! \n
+Send Your Answer in one file, reply that to this message. Duration will be calculated automatically."""
+                    )
+                message_id = message.id
+                answer.related_message_id = message_id
+                await sync_to_async(answer.save)()
+            else:
+                await query.answer("Error")
+        else:
+            await query.answer("error creating answer")
+    elif data.startswith("nextExam_"):
+        offset = int(data.split("_")[1]) + 10
+        keyboard = await create_exam_buttons(offset=offset)
+        await query.edit_message_text("Select an exam:", reply_markup=keyboard)
+        await query.answer()
+    elif data.startswith("prevExam_"):
+        offset = int(data.split("_")[1]) - 10
+        keyboard = await create_exam_buttons(offset=offset)
+        await query.edit_message_text("Select an exam:", reply_markup=keyboard)
+        await query.answer()
+
+
+
+async def handle_answer_reply(update: Update, context: CallbackContext) -> None:
+    if update.message.reply_to_message:  # Ensure the message is a reply
+        replied_message = update.message.reply_to_message
+        user_message = update.message
+        message = update.message
+
+        # Check if the replied message belongs to the bot
+        if replied_message.from_user.id == context.bot.id:
+            # Ensure the user isn't replying to their own message
+            if replied_message.from_user.id != user_message.from_user.id:
+                if message.document:  # Check if the message contains a document
+                    try:
+                        answer = await sync_to_async(Answer.objects.get)(
+                            related_student_chat_id=update.effective_user.id,
+                            related_message_id=replied_message.message_id,
+                        )
+                        if answer.ended:
+                            answer = "Ended"
+                        else:
+                            answer.ended = True
+                            await sync_to_async(answer.save)()
+                    except Exception as e:
+                        print(e)
+                        answer = None
+                    if answer == "Ended":
+                        await context.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text="Sorry, Exam is already ended."
+                        )
+                    elif not answer:
+                        await context.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text="IDK what to do with this!"
+                        )
+                    else:
+                        # Step 1: Retrieve the file from Telegram
+                        file = await context.bot.get_file(message.document.file_id)
+                        file_name = message.document.file_name
+                        os.makedirs("./tmpFiles", exist_ok=True)
+                        file_path = f"./tmpFiles/{file_name}"
+
+                        # Step 2: Download the file to a temporary location
+                        await file.download_to_drive(file_path)
+
+                        # Step 3: Save the file to the Django model
+                        with open(file_path, 'rb') as f:
+                            django_file = File(f)
+                            uploaded_file = answer.related_file = django_file
+                            await sync_to_async(answer.save)()
+
+                        # Step 4: Respond to the user
+                        await context.bot.send_message(
+                            chat_id=message.chat.id,
+                            text=f"File '{uploaded_file.file.name}' has been saved successfully!"
+                        )
+
+                        # Step 5: Clean up the temporary file
+                        os.remove(file_path)
+                else:
+                    await context.bot.send_message(
+                        chat_id=user_message.chat.id,
+                        text="Reply a Document!"
+                    )
+            else:
+                await context.bot.send_message(
+                    chat_id=user_message.chat.id,
+                    text="."
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=user_message.chat.id,
+                text="."
+            )
+
+
+reply_to_bot_handler = MessageHandler(filters.REPLY, handle_answer_reply)
+
+
 def main():
     """Main function to start the bot."""
     # Create an application instance
@@ -133,6 +428,10 @@ def main():
 
     # Add command and message handlers
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("my_exams", exams_command))
+    application.add_handler(CallbackQueryHandler(handle_callback_query))
+
+    application.add_handler(reply_to_bot_handler)
 
     # Run the bot
     application.run_polling()

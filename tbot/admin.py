@@ -71,12 +71,21 @@ class GroupAdmin(admin.ModelAdmin):
     search_fields = ['name', 'info']
 
 
+class AnswerAdmin(admin.ModelAdmin):
+    list_display = [
+        'related_exam',
+        'related_student',
+        'ended',
+        'duration'
+    ]
+
+
 admin.site.register(Student, StudentAdmin)
 admin.site.register(Teacher, TeacherAdmin)
 admin.site.register(Olympiad, OlympiadAdmin)
 admin.site.register(Group, GroupAdmin)
 admin.site.register(Exam)
-admin.site.register(Answer)
+admin.site.register(Answer, AnswerAdmin)
 admin.site.register(ScoreSheet)
 
 # Register your models here.
