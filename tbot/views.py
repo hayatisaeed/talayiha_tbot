@@ -13,6 +13,42 @@ from django.utils.decorators import method_decorator
 
 
 from .information import BASE_URL
+import openpyxl
+
+
+@csrf_exempt
+def upload_students(request):
+    if request.method == "POST" and request.FILES.get("file"):
+        file = request.FILES["file"]
+
+        try:
+            # Load the Excel workbook
+            wb = openpyxl.load_workbook(file)
+            sheet = wb.active
+
+            # Iterate through rows, skipping the header
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                national_id, phone_number, first_name, last_name, fullname, chat_id, city, school_name = row
+
+                # Create and save the student instance
+                Student.objects.create(
+                    national_id=national_id,
+                    phone_number=phone_number,
+                    first_name=first_name,
+                    last_name=last_name,
+                    fullname=fullname,
+                    chat_id=chat_id,
+                    city=city,
+                    school_name=school_name
+                )
+
+            return JsonResponse({"message": "Students uploaded successfully."}, status=201)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=400)
+    elif request.method == "GET":
+        return render(request, 'excel_upload.html')
+    return JsonResponse({"error": "Invalid request or no file uploaded."}, status=400)
 
 
 @method_decorator(csrf_exempt, name='dispatch')

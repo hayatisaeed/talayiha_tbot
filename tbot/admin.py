@@ -76,6 +76,7 @@ class AnswerAdmin(admin.ModelAdmin):
         'related_exam',
         'related_student',
         'ended',
+        'is_rated',
         'duration'
     ]
 

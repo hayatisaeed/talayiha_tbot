@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Students</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f9f9f9;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        .container {
+            background-color: #ffffff;
+            padding: 20px 40px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .container p {
+            font-size: 16px;
+            color: #333333;
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        .upload-form {
+            margin-top: 20px;
+        }
+
+        input[type="file"] {
+            padding: 8px;
+            font-size: 14px;
+            margin-bottom: 20px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        button {
+            background-color: #007bff;
+            color: #ffffff;
+            font-size: 16px;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <p>
+            <strong>Excel Column Format (.xlsx file):</strong><br>
+            col1: <span>national_id</span>, <br> col2: <span>phone_number (in a format like: 09123456789)</span>, <br> 
+            col3: <span>first_name</span>, <br> col4: <span>last_name</span>, <br>
+            col5: <span>fullname</span>, <br> col6: <span>chat_id</span>, <br>
+            col7: <span>city</span>, <br> col8: <span>school_name</span>
+        </p>
+        <form method="post" enctype="multipart/form-data" action="/upload_students/" class="upload-form">
+            {% csrf_token %}
+            <input type="file" name="file" accept=".xlsx">
+            <button type="submit">Upload</button>
+        </form>
+    </div>
+</body>
+</html>

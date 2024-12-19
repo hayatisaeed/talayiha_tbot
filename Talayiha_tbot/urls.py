@@ -16,11 +16,12 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import include
-from tbot.views import new_exam_view, AnswerView
+from tbot.views import new_exam_view, AnswerView, upload_students
 from django.urls import path
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('newExam/', new_exam_view),
-    path('showExam/', AnswerView.as_view())
+    path('showExam/', AnswerView.as_view()),
+    path('upload_students/', upload_students)
 ]

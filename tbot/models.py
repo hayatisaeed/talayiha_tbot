@@ -41,11 +41,11 @@ class President(models.Model):
 
 class Student(models.Model):
     national_id = models.CharField(max_length=255, blank=True)
-    phone_number = models.CharField(max_length=255, unique=True)
+    phone_number = models.CharField(max_length=255, unique=True, null=True, blank=True)
     first_name = models.CharField(max_length=255)
     last_name = models.CharField(max_length=255)
     fullname = models.CharField(max_length=255, blank=True)
-    chat_id = models.CharField(max_length=255, unique=True)
+    chat_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
     city = models.CharField(max_length=255, blank=True)
     school_name = models.CharField(max_length=255, blank=True)
 
@@ -112,6 +112,7 @@ class Answer(models.Model):
     time_started = models.DateTimeField(auto_now_add=True)
     time_ended = models.DateTimeField(auto_now=True)
     related_file = models.FileField(upload_to='examfiles/answerfiles', blank=True, null=True)
+    is_rated = models.BooleanField(default=False)
 
     def __str__(self):
         return f"Answer by {self.related_student}"
@@ -130,7 +131,7 @@ class Answer(models.Model):
 
 class ScoreSheet(models.Model):
     score = models.FloatField()
-    related_answer = models.OneToOneField(Answer, on_delete=models.CASCADE, related_name="score_sheet")
+    related_answer = models.ForeignKey(Answer, on_delete=models.CASCADE, related_name="score_sheet")
 
     def __str__(self):
         return f"ScoreSheet for Answer {self.related_answer}"

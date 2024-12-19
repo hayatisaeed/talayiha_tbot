@@ -88,13 +88,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
             f"""
-            Welcome  {fullname}!
-            
-            Available Commands:
-            
-            /my_exams  Your New Exams
-            /my_scores  Your Scores
-            
+Welcome  {fullname}!
             """,
             reply_markup=reply_markup
         )
@@ -127,12 +121,12 @@ or you can do it manually from you web panel.
         password = president.password
         await update.message.reply_text(
             f"""
-            Welcome {fullname},
-            please use your web panel:
-            {BASE_URL}/admin
+Welcome {fullname},
+please use your web panel:
+{BASE_URL}/admin
             
-            Your username: {username}
-            Your password: {password}
+Your username: {username}
+Your password: {password}
             """
         )
 
@@ -140,11 +134,11 @@ or you can do it manually from you web panel.
 async def register(update: Update, context: CallbackContext) -> None:
     user_id = update.message.from_user.id
     await update.message.reply_text(f"""
-    Your ChatID is:
+Your ChatID is:
     
     ```{user_id}```
     
-    Please ask admin to add you to the database.
+Please use /register command.
     """)
 
 
@@ -193,7 +187,7 @@ def noasync_get_answers(offset=0, limit=10, group_id: int | None = None):
     """
     if group_id:
         # Filter exams related to the specified group
-        answers = Answer.objects.filter(related_groups__id=group_id)
+        answers = Answer.objects.filter(related_exam__related_groups__id=group_id)
     else:
         # Return all exams if no group filter is applied
         answers = Answer.objects.all()
@@ -280,9 +274,13 @@ async def create_answer_buttons(offset=0, group_id=None):
     answers = await get_answers(offset=offset, limit=10, group_id=group_id)
     keyboard = []
     for answer in answers:
-        keyboard.append(
-            [InlineKeyboardButton(text=answer.name, callback_data=f"answer_{answer.id}")]
-        )
+        if answer.ended and answer.related_file:
+            fullname = await sync_to_async(lambda: answer.related_student.fullname)()
+            exam_name = await sync_to_async(lambda: answer.related_exam.name)()
+            is_rated = await sync_to_async(lambda: answer.is_rated)()
+            keyboard.append(
+                [InlineKeyboardButton(text=f"{fullname} - {exam_name} - {'✅' if is_rated else '🟡'}", callback_data=f"answer_{answer.id}")]
+            )
 
     last_row = []
     # Pagination buttons
@@ -321,7 +319,7 @@ async def create_group_buttons(offset=0, student=None, teacher=None):
 
 # Handler for the /my_exams command
 async def exams_command(update: Update, context: CallbackContext) -> int:
-    student = sync_to_async(Student.objects.get)(chat_id=update.effective_user.id)
+    student = await sync_to_async(Student.objects.get)(chat_id=update.effective_user.id)
     keyboard = await create_group_buttons(student=student)
     await update.message.reply_text("Select a group:", reply_markup=keyboard)
     return SHOW_EXAMS
@@ -339,7 +337,7 @@ def new_answer(student_id, exam_id, related_student_chat_id, time_started):
         return None
 
 
-async def handle_callback_query(update: Update, context: CallbackContext) -> int:
+async def handle_callback_query(update: Update, context: CallbackContext):
     query = update.callback_query
 
     data = query.data
@@ -349,7 +347,7 @@ async def handle_callback_query(update: Update, context: CallbackContext) -> int
         exam = await sync_to_async(Exam.objects.get)(pk=exam_id)
         keyboard = [
             [InlineKeyboardButton(text=f"Start Exam", callback_data=f"showExam_{exam_id}")],
-            [InlineKeyboardButton(text=f"Cancel", callback_data="exam_0")]
+            [InlineKeyboardButton(text=f"Cancel", callback_data="showMyGroups_0")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(f"{exam.name}", reply_markup=reply_markup)
@@ -368,12 +366,6 @@ async def handle_callback_query(update: Update, context: CallbackContext) -> int
             await query.edit_message_text(
                 f"Showing Answers of students of: {group.name}", reply_markup=reply_markup
             )
-        group_id = int(data.split("_")[1])
-        group = await sync_to_async(Group.objects.get)(pk=group_id)
-        reply_markup = await create_group_buttons(group_id=group_id)
-        await query.edit_message_text(
-            f"Showing Exams for: {group.name}", reply_markup=reply_markup
-        )
     elif data.startswith("showMyGroups_"):
         await query.answer()
         if await is_student(chat_id=update.effective_user.id):
@@ -393,11 +385,13 @@ async def handle_callback_query(update: Update, context: CallbackContext) -> int
         if answer:
             file_path = answer.related_file.path
             with open(file_path, 'rb') as file:
+                student_fullname = await sync_to_async(lambda: answer.related_student.fullname)()
+                related_exam_name = await sync_to_async(lambda: answer.related_exam.name)()
                 message = await context.bot.send_document(
                     chat_id=query.from_user.id,
                     document=InputFile(file, filename=answer.related_file.name),
-                    caption=f"Student Name: {answer.related_student.name}"
-                    f"\nAnswer to Exam: {answer.related_exam.name}"
+                    caption=f"Student Name: {student_fullname}"
+                    f"\nAnswer to Exam: {related_exam_name}"
                     f"\nDuration: {answer.duration}"
                     f"\n\nReply the score to this message"
 
@@ -411,7 +405,11 @@ async def handle_callback_query(update: Update, context: CallbackContext) -> int
         student_id = student.id
         exam_id = int(data.split("_")[1])
         exam = await sync_to_async(Exam.objects.get)(id=exam_id)
-        file_path = exam.related_file.path
+        if exam.related_file:
+            file_path = exam.related_file.path
+        else:
+            await query.answer("No file for this exam!")
+            return
         answer = await sync_to_async(new_answer)(
             student_id=student_id,
             related_student_chat_id=update.effective_user.id,
@@ -533,22 +531,71 @@ async def handle_answer_reply(update: Update, context: CallbackContext) -> None:
             if score is None:
                 await update.message.reply_text("Send a Valid Number! eg: 10.25")
             else:
-                answer_id = context.user_data[replied_message.id]
+                answer_id = context.user_data[replied_message.message_id]
                 answer = await sync_to_async(Answer.objects.get)(id=answer_id)
-                new_score_sheet = await sync_to_async(ScoreSheet.objects.create)(related_answer=answer, score=score)
-                await new_score_sheet.save()
-                related_student_chat_id = answer.related_student.chat_id
+                answer.is_rated = True
+                await sync_to_async(answer.save)()
+                await sync_to_async(ScoreSheet.objects.create)(related_answer=answer, score=score)
+                related_student_chat_id = await sync_to_async(lambda: answer.related_student.chat_id)()
+                exam_name = await sync_to_async(lambda: answer.related_exam.name)()
                 await update.message.reply_text(f"Done! Score was set: {score}")
                 await context.bot.send_message(
                     chat_id=related_student_chat_id,
                     text=f"You have a new score sheet!\n"
-                    f"Exam name: {answer.related_exam.name}\n"
+                    f"Exam name: {exam_name}\n"
                     f"Your exam duration: {answer.duration}\n"
                     f"\n\nYour exam score: {score}"
                 )
 
 
 reply_to_bot_handler = MessageHandler(filters.REPLY, handle_answer_reply)
+
+
+async def register_handler(update: Update, context: CallbackContext):
+    await update.message.reply_text("Send me your national id (latin numbers):\n/cancel")
+    return 'GET_NATIONAL_ID'
+
+
+async def register_get_phone_number(update: Update, context: CallbackContext):
+    try:
+        national_id = int(update.message.text)
+        context.user_data['national_id'] = str(national_id)
+        await update.message.reply_text("Now, send your phone number (eg: 09123456789):")
+        return 'GET_PHONE_NUMBER'
+    except ValueError:
+        await update.message.reply_text("Send a Valid National ID! 10 digits, latin numbers:")
+        return 'GET_NATIONAL_ID'
+
+
+async def register_verify(update: Update, context: CallbackContext):
+    try:
+        phone_number = update.message.text
+        student = await sync_to_async(Student.objects.get)(national_id=context.user_data['national_id'],
+                                                           phone_number=phone_number)
+        student.chat_id = update.effective_chat.id
+        await sync_to_async(student.save)()
+        await update.message.reply_text(f"Welcome {student.fullname}!\npress /start again.")
+        return ConversationHandler.END
+    except Exception as e:
+        await update.message.reply_text("User Not found! please contact admin.")
+        return ConversationHandler.END
+
+
+async def cancel(update: Update, context: CallbackContext):
+    """Cancels the conversation."""
+    await update.message.reply_text("Registration canceled. Press /start again.")
+    return ConversationHandler.END
+
+
+# Set up the ConversationHandler
+registration_conversation = ConversationHandler(
+    entry_points=[CommandHandler("register", register_handler)],
+    states={
+        'GET_NATIONAL_ID': [MessageHandler(filters.TEXT & ~filters.COMMAND, register_get_phone_number)],
+        'GET_PHONE_NUMBER': [MessageHandler(filters.TEXT & ~filters.COMMAND, register_verify)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+)
 
 
 def main():
@@ -560,6 +607,8 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("my_exams", exams_command))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
+
+    application.add_handler(registration_conversation)
 
     application.add_handler(reply_to_bot_handler)
 
